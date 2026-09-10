@@ -1,0 +1,104 @@
+name: 13-catalog-forge
+
+x-app: &app
+  build:
+    context: .
+    target: runtime
+  environment: &environment
+    DATABASE_URL: postgresql+asyncpg://catalogforge:catalogforge@database:5432/catalogforge
+    JWT_SECRET: ${JWT_SECRET:-local-demo-catalogforge-replace-before-deployment}
+    WORKER_INTERVAL: ${WORKER_INTERVAL:-0.5}
+    BATCH_SIZE: ${BATCH_SIZE:-2000}
+    LEASE_SECONDS: ${LEASE_SECONDS:-15}
+    UPLOAD_DIR: /data/imports
+  restart: unless-stopped
+  init: true
+
+services:
+  database:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: catalogforge
+      POSTGRES_USER: catalogforge
+      POSTGRES_PASSWORD: catalogforge
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U catalogforge -d catalogforge"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  migrate:
+    <<: *app
+    command: ["sh", "-c", "alembic upgrade head && python scripts/seed.py"]
+    depends_on:
+      database:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    <<: *app
+    volumes:
+      - imports_data:/data/imports
+    ports:
+      - "127.0.0.1:8130:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  worker:
+    <<: *app
+    volumes:
+      - imports_data:/data/imports:ro
+    healthcheck:
+      test: ["CMD", "python", "scripts/worker_health.py", "importer"]
+      interval: 5s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    command: ["python", "-m", "catalogforge.worker"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  test-db:
+    image: postgres:17-alpine
+    profiles: ["test"]
+    environment:
+      POSTGRES_DB: catalogforge_test
+      POSTGRES_USER: catalogforge
+      POSTGRES_PASSWORD: catalogforge
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U catalogforge -d catalogforge_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  test:
+    build:
+      context: .
+      target: test
+    profiles: ["test"]
+    environment:
+      <<: *environment
+      DATABASE_URL: postgresql+asyncpg://catalogforge:catalogforge@test-db:5432/catalogforge_test
+      TESTING: "true"
+      UPLOAD_DIR: /tmp/catalogforge-tests
+      BATCH_SIZE: "2"
+    depends_on:
+      test-db:
+        condition: service_healthy
+    init: true
+
+volumes:
+  postgres_data:
+  imports_data:

@@ -1,0 +1,19 @@
+name: checks
+on: [push, pull_request]
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --extra dev --frozen
+      - run: uv run ruff format --check . && uv run ruff check .
+      - run: docker compose --profile test build test
+      - run: docker compose --profile test run --rm test
+      - run: docker compose up --build -d --wait --wait-timeout 180
+      - run: docker compose exec -T api python scripts/smoke.py
+      - run: uv run python scripts/recovery_smoke.py --rows 200000
+      - if: always()
+        run: docker compose --profile test logs --tail=100
+      - if: always()
+        run: docker compose --profile test down -v

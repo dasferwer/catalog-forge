@@ -1,0 +1,51 @@
+{
+  "verified_at": "2026-09-10T23:16:30.110213+00:00",
+  "project": "catalogforge",
+  "environment": "Docker Desktop, linux/arm64, Python 3.12, PostgreSQL 17",
+  "integration_tests": {
+    "passed": 21,
+    "output": "21 passed in 0.97s",
+    "database": "PostgreSQL 17, isolated test-db"
+  },
+  "live_smoke": {
+    "ok": true,
+    "catalog_id": "00d82da7-1f4b-4c18-98c9-3604c20de147",
+    "job_id": "192bb724-c252-4f6c-b581-db78ee5c1977",
+    "source_rows": 10002,
+    "products": 10000,
+    "duplicate_rows": 1,
+    "invalid_rows": 1,
+    "peak_worker_rss_mib": 63.41,
+    "elapsed_seconds": 2.41,
+    "formats": [
+      "csv",
+      "jsonl",
+      "json"
+    ]
+  },
+  "million_row_recovery": {
+    "ok": true,
+    "input_rows": 1000002,
+    "products": 1000000,
+    "committed_checkpoint_before_kill": 4000,
+    "resumed_from_same_checkpoint": true,
+    "partial_catalog_visible": false,
+    "recovery_count": 1,
+    "duplicate_rows": 1,
+    "invalid_rows": 1,
+    "peak_worker_rss_mib": 63.61,
+    "elapsed_seconds": 49.9,
+    "job_id": "eca2b4b4-8c4c-44d3-b585-88a05f5df41f"
+  },
+  "checks": {
+    "ruff_lint": "passed",
+    "ruff_format": "passed",
+    "uv_lock": "passed",
+    "docker_compose": "passed",
+    "seed_twice": "passed",
+    "runtime_without_pytest_and_ruff": "passed",
+    "openapi_snapshot_matches_live": "passed",
+    "worker_health": "passed"
+  },
+  "scope": "Local reproducible measurements. Worker RSS excludes PostgreSQL, Docker Desktop and client memory. CI workflow prepared; remote CI not run."
+}
