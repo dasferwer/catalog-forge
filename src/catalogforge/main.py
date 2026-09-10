@@ -302,7 +302,7 @@ async def upload(
         if digest.hexdigest() != x_content_sha256.lower():
             raise HTTPException(422, "SHA-256 mismatch; retry the upload with the correct checksum")
         await asyncio.to_thread(os.replace, temporary, complete)
-        # Make the rename durable on the local filesystem before making the job visible.
+        # Сохраняем переименование на диск до того, как воркер увидит готовое задание.
         directory_fd = os.open(directory, os.O_RDONLY)
         try:
             await asyncio.to_thread(os.fsync, directory_fd)

@@ -1,4 +1,4 @@
-"""Host-side crash recovery and bounded-memory benchmark. Restarts only this worker."""
+"""Из папки проекта проверяем восстановление и память, перезапуская его воркер."""
 
 import argparse
 import json

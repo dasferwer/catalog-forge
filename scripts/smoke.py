@@ -1,4 +1,4 @@
-"""Live import smoke with streaming file generation and HTTP upload."""
+"""Генерируем файл по частям, загружаем через HTTP и проверяем результат импорта."""
 
 import argparse
 import hashlib
