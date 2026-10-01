@@ -5,8 +5,6 @@ import re
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 
-import ijson
-
 MAX_RECORD_BYTES = 131072
 csv.field_size_limit(MAX_RECORD_BYTES)
 
@@ -24,8 +22,13 @@ class InputRow:
 
 
 class BoundedLines:
-    def __init__(self, source):
+    def __init__(self, source, *, bound_record=False):
         self.source = source
+        self.bound_record = bound_record
+        self.record_bytes = 0
+
+    def finish_record(self):
+        self.record_bytes = 0
 
     def __iter__(self):
         return self
@@ -36,10 +39,81 @@ class BoundedLines:
             raise StopIteration
         if len(line) > MAX_RECORD_BYTES:
             raise SourceError("physical_line_exceeds_128_kib")
+        self.record_bytes += len(line)
+        if self.bound_record and self.record_bytes > MAX_RECORD_BYTES:
+            raise SourceError("record_exceeds_128_kib")
         try:
             return line.decode("utf-8").removeprefix("\ufeff")
         except UnicodeDecodeError:
             raise SourceError("source_must_be_utf8") from None
+
+
+def reject_constant(_):
+    raise ValueError("non_finite_json_number")
+
+
+def json_array_values(source):
+    """Ограничивает сырые байты элемента до декодирования и сборки объекта."""
+
+    def bytes_stream():
+        while chunk := source.read(4096):
+            yield from chunk
+
+    stream = bytes_stream()
+
+    def next_nonspace():
+        for byte in stream:
+            if byte not in b" \t\r\n":
+                return byte
+        return None
+
+    if next_nonspace() != ord("["):
+        raise SourceError("json_root_must_be_array")
+    byte = next_nonspace()
+    if byte == ord("]"):
+        if next_nonspace() is not None:
+            raise SourceError("malformed_source")
+        return
+    while True:
+        record = bytearray()
+        depth = 0
+        quoted = escaped = False
+        while byte is not None:
+            if not quoted and depth == 0 and byte in b",]":
+                break
+            record.append(byte)
+            if len(record) > MAX_RECORD_BYTES:
+                raise SourceError("record_exceeds_128_kib")
+            if quoted:
+                if escaped:
+                    escaped = False
+                elif byte == ord("\\"):
+                    escaped = True
+                elif byte == ord('"'):
+                    quoted = False
+            elif byte == ord('"'):
+                quoted = True
+            elif byte in b"[{":
+                depth += 1
+            elif byte in b"]}":
+                depth -= 1
+                if depth < 0:
+                    raise SourceError("malformed_source")
+            byte = next(stream, None)
+        if byte is None or not record:
+            raise SourceError("malformed_source")
+        try:
+            value = json.loads(record, parse_float=Decimal, parse_constant=reject_constant)
+        except (ValueError, RecursionError):
+            raise SourceError("malformed_source") from None
+        yield value
+        if byte == ord("]"):
+            if next_nonspace() is not None:
+                raise SourceError("malformed_source")
+            return
+        byte = next_nonspace()
+        if byte is None or byte == ord("]"):
+            raise SourceError("malformed_source")
 
 
 def rows(source, job):
@@ -47,20 +121,24 @@ def rows(source, job):
     checkpoint = job["checkpoint_bytes"]
     try:
         if job["format"] == "csv":
-            reader = csv.reader(BoundedLines(source), delimiter=job["delimiter"], strict=True)
+            lines = BoundedLines(source, bound_record=True)
+            reader = csv.reader(lines, delimiter=job["delimiter"], strict=True)
             header = next(reader, None)
+            lines.finish_record()
             if not header or len(header) > 50 or len(header) != len(set(header)):
                 raise SourceError("csv_header_missing_duplicate_or_too_wide")
             if not set(job["column_map"].values()) <= set(header):
                 raise SourceError("csv_required_columns_missing")
             if checkpoint:
                 source.seek(checkpoint)
-                reader = csv.reader(BoundedLines(source), delimiter=job["delimiter"], strict=True)
+                lines = BoundedLines(source, bound_record=True)
+                reader = csv.reader(lines, delimiter=job["delimiter"], strict=True)
             start = source.tell()
             for number, values in enumerate(reader, start=processed + 1):
                 end = source.tell()
                 if end - start > MAX_RECORD_BYTES:
                     raise SourceError("record_exceeds_128_kib")
+                lines.finish_record()
                 yield InputRow(
                     number,
                     end,
@@ -75,22 +153,17 @@ def rows(source, job):
                     value = json.loads(
                         line,
                         parse_float=Decimal,
-                        parse_constant=lambda _: (_ for _ in ()).throw(ValueError()),
+                        parse_constant=reject_constant,
                     )
                     yield InputRow(number, source.tell(), value)
                 except (ValueError, RecursionError):
                     yield InputRow(number, source.tell(), error="invalid_json_record")
         else:
-            first = b" "
-            while first and first.isspace():
-                first = source.read(1)
-            if first != b"[":
-                raise SourceError("json_root_must_be_array")
             source.seek(0)
-            for number, value in enumerate(ijson.items(source, "item"), start=1):
+            for number, value in enumerate(json_array_values(source), start=1):
                 if number > processed:
                     yield InputRow(number, 0, value)
-    except (csv.Error, ijson.JSONError, UnicodeDecodeError):
+    except (csv.Error, UnicodeDecodeError):
         raise SourceError("malformed_source") from None
 
 

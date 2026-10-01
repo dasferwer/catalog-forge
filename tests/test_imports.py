@@ -353,6 +353,64 @@ async def test_malformed_source_is_failed_without_partial_products(
         assert await conn.scalar(text("SELECT count(*) FROM products")) == 0
 
 
+@pytest.mark.parametrize("format", ["csv", "jsonl", "json"])
+async def test_oversized_unused_field_never_publishes_products(format, client, identities, catalog):
+    from catalogforge.parsing import MAX_RECORD_BYTES
+
+    record = {
+        "sku": "A",
+        "name": "Name",
+        "price": "1",
+        "stock": 1,
+        "unused": "x" * MAX_RECORD_BYTES,
+    }
+    if format == "csv":
+        content = ("sku,name,price,stock,unused\nA,Name,1,1," + record["unused"] + "\n").encode()
+    elif format == "jsonl":
+        content = json.dumps(record).encode() + b"\n"
+    else:
+        content = json.dumps([record]).encode()
+    job = await upload(client, identities, catalog, content, format=format)
+    await process_job(await claim_job())
+    assert (await status(client, identities, job))["status"] == "failed"
+    async with engine.connect() as conn:
+        assert await conn.scalar(text("SELECT count(*) FROM products")) == 0
+
+
+async def test_json_cancel_and_resume_with_nested_unused_fields(
+    client, identities, catalog, monkeypatch
+):
+    values = [
+        {
+            "sku": f"A{i}",
+            "name": "Name",
+            "price": "1.25",
+            "stock": i,
+            "unused": {"nested": ["x" * 1000]},
+        }
+        for i in range(7)
+    ]
+    public = await upload(client, identities, catalog, json.dumps(values).encode(), format="json")
+    first = await claim_job()
+    with (settings.upload_dir / first["source_path"]).open("rb") as source:
+        assert await save_batch(first, list(itertools.islice(rows(source, first), 2)))
+    await expire_lease()
+    resumed = await claim_job()
+    assert resumed["processed_rows"] == 2
+    original = save_batch
+
+    async def cancel_after_batch(job, batch):
+        result = await original(job, batch)
+        await client.post(f"/imports/{public['id']}/cancel", headers=headers(identities))
+        return result
+
+    monkeypatch.setattr("catalogforge.worker.save_batch", cancel_after_batch)
+    await process_job(resumed)
+    assert (await status(client, identities, public))["status"] == "cancelled"
+    async with engine.connect() as conn:
+        assert await conn.scalar(text("SELECT count(*) FROM products")) == 0
+
+
 async def test_cleanup_removes_source_and_staging_but_preserves_products(
     client, identities, catalog
 ):
