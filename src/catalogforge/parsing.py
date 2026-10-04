@@ -26,6 +26,7 @@ class BoundedLines:
         self.source = source
         self.bound_record = bound_record
         self.record_bytes = 0
+        self.at_source_start = source.tell() == 0
 
     def finish_record(self):
         self.record_bytes = 0
@@ -43,7 +44,11 @@ class BoundedLines:
         if self.bound_record and self.record_bytes > MAX_RECORD_BYTES:
             raise SourceError("record_exceeds_128_kib")
         try:
-            return line.decode("utf-8").removeprefix("\ufeff")
+            decoded = line.decode("utf-8")
+            if self.at_source_start:
+                decoded = decoded.removeprefix("\ufeff")
+            self.at_source_start = False
+            return decoded
         except UnicodeDecodeError:
             raise SourceError("source_must_be_utf8") from None
 
@@ -182,7 +187,7 @@ def normalize(raw, mapping):
     ):
         return None, "invalid_sku"
     sku = sku.strip().upper()
-    if not isinstance(name, str) or not 1 <= len(" ".join(name.split())) <= 200:
+    if not isinstance(name, str) or "\x00" in name or not 1 <= len(" ".join(name.split())) <= 200:
         return None, "invalid_name"
     name = " ".join(name.split())
     try:

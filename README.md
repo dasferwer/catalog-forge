@@ -152,3 +152,16 @@ CatalogForge is a streaming catalog-import backend with durable batch checkpoint
 last-valid-row deduplication and atomic promotion into the published catalog.
 Its PostgreSQL tests and a one-million-row worker-crash scenario verify recovery,
 precise counters, ownership isolation and measured worker memory consumption.
+
+## Исправления импорта — этап F
+
+NUL в названии товара отклоняется как `invalid_name` до PostgreSQL COPY.
+При `skip` корректные строки публикуются, при `reject` импорт завершается ошибкой,
+а опубликованный каталог сохраняется. Невалидная строка больше не оставляет
+задание в бесконечном повторе. Ошибки зависимости по-прежнему обрабатывает worker.
+
+UTF-8 BOM удаляется только в абсолютном начале CSV/JSONL. U+FEFF внутри
+многострочного поля или после checkpoint сохраняется; лимит логической записи
+128 KiB остаётся действующим. [Проверка этапа F](docs/verification-stage-f.json):
+57 тестов в отдельном тестовом образе с PostgreSQL, включая CSV/JSONL/JSON,
+обе политики ошибок, terminal claim и следующее исправное задание.

@@ -1,0 +1,26 @@
+{
+  "stage": "F",
+  "scope": [
+    "R03",
+    "R10"
+  ],
+  "environment": "локальный тестовый Docker-образ, Python 3.12, отдельный PostgreSQL 17",
+  "red": {
+    "parser_failed": 6,
+    "actual_copy_failed": 6
+  },
+  "green": {
+    "full_suite_passed": 57,
+    "parser_subset_passed": 26,
+    "ruff": "passed",
+    "format": "passed",
+    "compose_config": "passed"
+  },
+  "cases": [
+    "NUL name до COPY; CSV/JSONL/JSON × skip/reject",
+    "terminal counters и отсутствие повторного claim",
+    "следующий исправный импорт",
+    "BOM в начале, multiline U+FEFF, checkpoint CSV, JSONL"
+  ],
+  "boundary": "Регрессии и существующий suite; не нагрузочный benchmark и не production SLA."
+}

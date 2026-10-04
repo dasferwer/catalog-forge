@@ -457,3 +457,80 @@ async def test_jsonl_rejects_non_finite_and_excess_precision_numbers(client, ide
     await process_job(await claim_job())
     result = await status(client, identities, job)
     assert result["invalid_rows"] == 2 and result["inserted_rows"] == 0
+
+
+def format_values(values, format):
+    if format == "csv":
+        import csv
+        import io
+
+        buffer = io.StringIO(newline="")
+        writer = csv.DictWriter(buffer, fieldnames=["sku", "name", "price", "stock"])
+        writer.writeheader()
+        writer.writerows(values)
+        return buffer.getvalue().encode()
+    if format == "jsonl":
+        return ("\n".join(json.dumps(value) for value in values) + "\n").encode()
+    return json.dumps(values).encode()
+
+
+@pytest.mark.parametrize("format", ["csv", "jsonl", "json"])
+@pytest.mark.parametrize("policy", ["skip", "reject"])
+async def test_nul_rows_reach_terminal_policy_without_copy_or_reclaim(
+    format, policy, client, identities, catalog, monkeypatch
+):
+    import asyncpg
+
+    existing = [{"sku": "EXISTING", "name": "Published", "price": "9.00", "stock": 9}]
+    await upload(client, identities, catalog, format_values(existing, "csv"))
+    await process_job(await claim_job())
+    url = f"/catalogs/{catalog['id']}/products"
+    before = (await client.get(url, headers=headers(identities))).json()
+    copied = []
+    original = asyncpg.Connection.copy_records_to_table
+
+    async def capture(self, *args, **kwargs):
+        records = list(kwargs["records"])
+        copied.extend(records)
+        return await original(self, *args, **{**kwargs, "records": records})
+
+    # Делегируем настоящий COPY в отдельную PostgreSQL, без имитации отказа БД.
+    monkeypatch.setattr(asyncpg.Connection, "copy_records_to_table", capture)
+    values = [
+        {"sku": "A", "name": "First", "price": "1.25", "stock": 1},
+        {"sku": "B", "name": "before\x00after", "price": "2.50", "stock": 2},
+        {"sku": "C", "name": "Third", "price": "3.75", "stock": 3},
+    ]
+    public = await upload(
+        client,
+        identities,
+        catalog,
+        format_values(values, format),
+        format=format,
+        error_policy=policy,
+    )
+    await process_job(await claim_job())
+    result = await status(client, identities, public)
+    assert (result["processed_rows"], result["valid_rows"], result["invalid_rows"]) == (3, 2, 1)
+    assert result["status"] == ("succeeded" if policy == "skip" else "failed")
+    assert copied and all("\x00" not in row[2] for row in copied)
+    errors = (
+        await client.get(f"/imports/{public['id']}/errors", headers=headers(identities))
+    ).json()
+    assert errors == [{"row_number": 2, "code": "invalid_name"}]
+    after = (await client.get(url, headers=headers(identities))).json()
+    if policy == "reject":
+        assert after == before
+        assert result["error"] == "invalid_rows_rejected"
+    else:
+        assert [(row["sku"], row["name"]) for row in after] == [
+            ("A", "First"),
+            ("C", "Third"),
+            ("EXISTING", "Published"),
+        ]
+    assert await claim_job() is None
+    next_values = [{"sku": "NEXT", "name": "Next job", "price": "4.00", "stock": 1}]
+    next_job = await upload(client, identities, catalog, format_values(next_values, "csv"))
+    await process_job(await claim_job())
+    assert (await status(client, identities, next_job))["status"] == "succeeded"
+    assert await claim_job() is None

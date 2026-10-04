@@ -94,3 +94,34 @@ def test_json_iterator_reads_only_bounded_lookahead_before_first_record():
     assert next(iterator).value == 1
     assert source.tell() <= 4096
     iterator.close()
+
+
+@pytest.mark.parametrize("name", ["before\x00after", "\x00", "ok\x00"])
+def test_nul_name_is_invalid_before_copy(name):
+    from catalogforge.parsing import normalize
+
+    value = {"sku": "A", "name": name, "price": "1.25", "stock": 1}
+    assert normalize(value, job()["column_map"]) == (None, "invalid_name")
+
+
+def test_initial_bom_is_removed_but_multiline_field_bom_is_preserved():
+    payload = '\ufeffsku,name,price,stock\r\nA,"first\r\n\ufeffsecond",1.25,1\r\n'.encode()
+    result = list(rows(io.BytesIO(payload), job("csv")))
+    assert result[0].value["name"] == "first\r\n\ufeffsecond"
+    assert result[0].offset == len(payload)
+
+
+def test_csv_resume_preserves_bom_at_nonzero_source_offset():
+    first = b"\xef\xbb\xbfsku,name,price,stock\nA,First,1.25,1\n"
+    second = "\ufeffB,Second,2.50,1\n".encode()
+    result = list(rows(io.BytesIO(first + second), job("csv", 1, len(first))))
+    assert result[0].number == 2
+    assert result[0].value["sku"] == "\ufeffB"
+    assert result[0].offset == len(first + second)
+
+
+def test_jsonl_bom_only_belongs_to_absolute_source_start():
+    payload = '\ufeff{"sku":"A"}\n\ufeff{"sku":"B"}\n'.encode()
+    result = list(rows(io.BytesIO(payload), job("jsonl")))
+    assert result[0].value == {"sku": "A"}
+    assert result[1].error == "invalid_json_record"
